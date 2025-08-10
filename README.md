@@ -1,0 +1,2 @@
+# modis2sit_based_nswf
+基于modis数据的海冰厚度反演，并且同样计算了短波辐射

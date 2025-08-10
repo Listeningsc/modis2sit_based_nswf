@@ -29,7 +29,7 @@ function sit2thermodynamic_equilibrium(result_doy,ist_parent_path,ist_coord_pare
     matches_ist = contains({ist_hdf_list.name}, result_doy);
     filtered_name = {ist_hdf_list(matches_ist).name}';
     ib_data_range = length(filtered_name);
-    target_month = num2str(str_ib_date(5:6));
+    target_month = str2double(str_ib_date(5:6));
     for i = 1:length(ib_data_range)
         target_ist_name = filtered_name{i};
         timestamp = target_ist_name(8:19);
@@ -101,7 +101,8 @@ function sit2thermodynamic_equilibrium(result_doy,ist_parent_path,ist_coord_pare
             wgs84 = referenceEllipsoid('WGS84');
             for j = size(target_non_cloud_ist,1)
                 j_coord = target_non_cloud_ist(j,1:2);
-                j_dist = distance(j_coord(2),j_coord(1),sit_awi(:,2),sit_awi(:,1),wgs84,'km');
+                j_angdist = distance(j_coord(2),j_coord(1),sit_awi(:,2),sit_awi(:,1),wgs84);
+                j_dist = deg2km(j_angdist);
                 j_inx = j_dist == min(j_dist);
                 reference_sit = sit_awi(j_inx,3);
                 

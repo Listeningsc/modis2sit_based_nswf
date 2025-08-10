@@ -347,7 +347,7 @@ function mod2sit = ist2sit(surf_aux,mod_aux,nswf)
     Ki = 2.034+0.13*8/((surf_aux(3)+271.35)/2-273);
     mod2sit = Ki * (271.35 - surf_aux(3))/Fc;
 %     surf_aux(:,6) = mod2sit;
-    if mod2sit <0 || mod2sit>1
+    if mod2sit <0 | mod2sit>1
         mod2sit = nan;
     end
 %     mod2sit_inx = mod2sit<0 | mod2sit>1;

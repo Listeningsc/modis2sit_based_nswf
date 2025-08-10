@@ -51,7 +51,7 @@ function net_s = net_shortwave_flux_fit(d, month)
     net_s = cf.a * exp(-d) + cf.b;
 end
 % tar_func.m
-function y = tar_func(x, a, b)
+function y = tar_func(a, b, x)
 % tar_func   Exponential fit function: a·exp(−x) + b
 %   y = tar_func(x, a, b) returns a*exp(-x) + b, vectorized in x.
     y = a .* exp(-x) + b;

@@ -133,10 +133,11 @@ function sit2thermodynamic_equilibrium(result_doy,ist_parent_path,ist_coord_pare
                 end
             end
         end
+        output_path = 'W:\ljx_aux\MODIS\output_sit';
+        output_name = [timestamp,'.mat'];
+        save(fullfile(output_path,output_name),'target_non_cloud_sit')
     end
-    output_path = 'W:\ljx_aux\MODIS\output_sit';
-    output_name = [timestamp,'.mat'];
-    save(fullfile(output_path,output_name),'target_non_cloud_sit')
+
 end
 
 function era_output = era_data_exact(era_path,target_year,era_mat_path)

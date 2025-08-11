@@ -86,7 +86,6 @@ function sit2thermodynamic_equilibrium(result_doy,ist_parent_path,ist_coord_pare
            %% 白天计算 得出应用的太阳天顶角的数据矩阵2030*1350
             inx_zenith = ist_lon < -120 & ist_lon > -170 & ist_lat>66 & ist_lat<80;
             sort_solar_zenith = roundn(sortrows([ist_lon(inx_zenith),ist_lat(inx_zenith),expanded_solar_zenith(inx_zenith)]),-4);
-            disp(sort_solar_zenith);
             ist2zenith_inx = ismember(sort_solar_zenith(:,1:2),sort_non_cloud_ist(:,1:2),'rows');
             % 得出有效冰面温度下的太阳天顶角
             target_solar_zenith = sort_solar_zenith(ist2zenith_inx,:);
@@ -98,9 +97,7 @@ function sit2thermodynamic_equilibrium(result_doy,ist_parent_path,ist_coord_pare
             target_non_cloud_sit = target_non_cloud_ist;
             % 提取白天的前一天的 awi 海冰厚度,作为初始海冰厚度值,
             % 输出AWI海冰厚度n*3数据矩阵
-            disp(str_ib_date);
             sit_awi = awi_exact_sit(str_ib_date);
-            disp(sit_awi)
             % 将sit_awi海冰厚度对应到每一个有效冰面温度，由于只是初始值，所以利用最邻近法进行赋值
             wgs84 = referenceEllipsoid('WGS84');
             for j = size(target_non_cloud_ist,1)

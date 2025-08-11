@@ -108,15 +108,10 @@ function sit2thermodynamic_equilibrium(result_doy,ist_parent_path,ist_coord_pare
                 j_angdist = distance(j_coord(2),j_coord(1),sit_awi(:,2),sit_awi(:,1),wgs84);
                 j_dist = deg2km(j_angdist);
                 j_inx = j_dist == min(j_dist);
-                reference_sit = sit_awi(j_inx,3);
-                
-                fprintf('参考海冰厚度\n');
-                disp(reference_sit);
-                
+                reference_sit = sit_awi(j_inx,3);  
                 nswf_fit = net_shortwave_flux_fit(reference_sit,target_month);
-                fprintf('拟合短波辐射对应得出短波辐射 %.2f\n', nswf_fit);
                 nswf_fit_sit = ist2sit(target_non_cloud_ist(j,:),mod_aux,nswf_fit);
-                fprintf('拟合短波辐射对应得出海冰厚度 %.2f', nswf_fit_sit);
+
                 if isnan(nswf_fit_sit)
                     nswf_fit_sit = -1;
                 end

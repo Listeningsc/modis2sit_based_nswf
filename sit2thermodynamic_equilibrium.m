@@ -59,6 +59,7 @@ function sit2thermodynamic_equilibrium(result_doy,ist_parent_path,ist_coord_pare
             mod_aux = sortrows(double([reshape(era_lon,[era_r*era_c 1]),reshape(era_lat,[era_r*era_c 1]),... 
                                     reshape(target_air_t2m,[era_r*era_c 1]), reshape(wind_2m_speed, [era_r*era_c 1])]));
             
+            
             % 注意，这里的输出参数，都是剔除过 多余列数的数据
             % 注意ist_coarse_lon 和 ist_lon 都是-180-180度的范围
             ist_output = ist_data_exact(target_ist_path,ist_coord_path,cloud_path,target_ist_name,target_coord_name,target_cloud_name);
@@ -81,10 +82,11 @@ function sit2thermodynamic_equilibrium(result_doy,ist_parent_path,ist_coord_pare
 %             sit_night(sit_inx,:)=[];
 
             expanded_solar_zenith = solar_zenith_exact(target_cloud_file,mod_ist);
+            
            %% 白天计算 得出应用的太阳天顶角的数据矩阵2030*1350
             inx_zenith = ist_lon < -120 & ist_lon > -170 & ist_lat>66 & ist_lat<80;
             sort_solar_zenith = roundn(sortrows([ist_lon(inx_zenith),ist_lat(inx_zenith),expanded_solar_zenith(inx_zenith)]),-4);
-            
+            disp(sort_solar_zenith);
             ist2zenith_inx = ismember(sort_solar_zenith(:,1:2),sort_non_cloud_ist(:,1:2),'rows');
             % 得出有效冰面温度下的太阳天顶角
             target_solar_zenith = sort_solar_zenith(ist2zenith_inx,:);
@@ -96,7 +98,9 @@ function sit2thermodynamic_equilibrium(result_doy,ist_parent_path,ist_coord_pare
             target_non_cloud_sit = target_non_cloud_ist;
             % 提取白天的前一天的 awi 海冰厚度,作为初始海冰厚度值,
             % 输出AWI海冰厚度n*3数据矩阵
+            disp(str_ib_date);
             sit_awi = awi_exact_sit(str_ib_date);
+            disp(sit_awi)
             % 将sit_awi海冰厚度对应到每一个有效冰面温度，由于只是初始值，所以利用最邻近法进行赋值
             wgs84 = referenceEllipsoid('WGS84');
             for j = size(target_non_cloud_ist,1)
@@ -106,8 +110,17 @@ function sit2thermodynamic_equilibrium(result_doy,ist_parent_path,ist_coord_pare
                 j_inx = j_dist == min(j_dist);
                 reference_sit = sit_awi(j_inx,3);
                 
+                fprintf('参考海冰厚度\n');
+                disp(reference_sit);
+                
                 nswf_fit = net_shortwave_flux_fit(reference_sit,target_month);
-                target_non_cloud_sit(j,3) = ist2sit(target_non_cloud_ist(j,:),mod_aux,nswf_fit);
+                fprintf('拟合短波辐射对应得出短波辐射 %.2f\n', nswf_fit);
+                nswf_fit_sit = ist2sit(target_non_cloud_ist(j,:),mod_aux,nswf_fit);
+                fprintf('拟合短波辐射对应得出海冰厚度 %.2f', nswf_fit_sit);
+                if isnan(nswf_fit_sit)
+                    nswf_fit_sit = -1;
+                end
+                target_non_cloud_sit(j,3) = nswf_fit_sit;
                  
                 sit_max = max(0.9,1.5*reference_sit);
                 sit4nswf_range = [0.05:0.025:0.5,0.55:0.05:sit_max];
@@ -116,9 +129,16 @@ function sit2thermodynamic_equilibrium(result_doy,ist_parent_path,ist_coord_pare
                     nswf_parameterization = net_shortwave_flux_parameterization(target_solar_zenith(k),sit4nswf_range(k));
                     sit_candidate4nswf_parameterization(k) = ist2sit(target_non_cloud_ist(j,:),mod_aux,nswf_parameterization);
                 end
-                sit_diff = abs(sit4nswf_range-sit_candidate4nswf_parameterization);
-                select_inx = sit_diff == min(sit_diff);
-                target_non_cloud_sit(j,4) = sit_candidate4nswf_parameterization(select_inx);
+                nan_param_inx = isnan(sit_candidate4nswf_parameterization);
+                sit_candidate4nswf_parameterization(nan_param_inx) = [];
+                if isempty(sit_candidate4nswf_parameterization)
+                    continue
+                else
+                    sit4nswf_range(nan_param_inx)=[];
+                    sit_diff = abs(sit4nswf_range-sit_candidate4nswf_parameterization);
+                    select_inx = sit_diff == min(sit_diff);
+                    target_non_cloud_sit(j,4) = sit_candidate4nswf_parameterization(select_inx);
+                end
             end
         end
     end
@@ -366,7 +386,7 @@ function sit_awi = awi_exact_sit(str_ib_date)
     awi_lon = ncread(target_awi_file,'longitude');
     awi_sit = ncread(target_awi_file,'sea_ice_thickness');
     
-    awi_inx = awi_lat<80 & awi_lat>66 & awi_lon <-170 & awi_lon>-120 & awi_sit>=0 & awi_sit < 1;
+    awi_inx = awi_lat<80 & awi_lat>66 & awi_lon > -170 & awi_lon < -120 & awi_sit>=0 & awi_sit < 1;
     sit_awi = [awi_lon(awi_inx),awi_lat(awi_inx),awi_sit(awi_inx)];
     
 end

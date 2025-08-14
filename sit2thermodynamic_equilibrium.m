@@ -18,71 +18,58 @@ function sit2thermodynamic_equilibrium(result_doy,ist_parent_path,ist_coord_pare
     % 云掩膜路径
     cloud_path = fullfile(cloud_parent_path,sensor,day_path,num2str(target_year)); 
     % 温度数据
-    ist_hdf_list = dir([target_ist_path,'\*.','hdf']);
+    ist_hdf_list = dir(fullfile(target_ist_path,'*.hdf'));
     % 温度1KM坐标数据
-    ist_coord_list = dir([ist_coord_path,'\*.','hdf']);
+    ist_coord_list = dir(fullfile(ist_coord_path,'*.hdf'));
     %modis云掩膜数据
-    cloud_hdf_list = dir([cloud_path,'\*.','hdf']);
+    cloud_hdf_list = dir(fullfile(cloud_path,'*.hdf'));
     
     % 根据得出的数据信息，进而对对应的IB数据日期进行提取
     % 每个数据天下，会有多个IB数据
     matches_ist = contains({ist_hdf_list.name}, result_doy);
     filtered_name = {ist_hdf_list(matches_ist).name}';
-    ib_data_range = length(filtered_name);
     target_month = str2double(str_ib_date(5:6));
-    for i = 1:length(ib_data_range)
+    for i = 1:numel(filtered_name)
         target_ist_name = filtered_name{i};
         timestamp = target_ist_name(8:19);
+        
+        %era5辅助数据 现将温度的doy天数判断是否需要将中间月份剔除，并且将选取的时间点都提取出来
+        target_doy = str2double(target_ist_name(12:14));
+        target_hour = str2double(target_ist_name(16:17));
+        if target_doy>89
+            target_doy = target_doy - (30+31+30+31+31);
+        end
+        target_air_t2m = era_t2m(:,:,target_doy);
+        target_spe_u = era_wind_u(:,:,target_doy);
+        target_spe_v = era_wind_v(:,:,target_doy);
+        wind_10m_speed = sqrt(target_spe_u.^2 + target_spe_v.^2);
+        % 转换为2m的风速
+        wind_2m_speed = wind_10m_speed/1.27;
+        mod_aux = sortrows(double([reshape(era_lon,[era_r*era_c 1]),reshape(era_lat,[era_r*era_c 1]),... 
+                                reshape(target_air_t2m,[era_r*era_c 1]), reshape(wind_2m_speed, [era_r*era_c 1])]));     
         matches_coord = contains({ist_coord_list.name}, timestamp);
         matches_cloud = contains({cloud_hdf_list.name}, timestamp);
-        if sum(matches_coord)==0 || sum(matches_coord)==0
+        if sum(matches_coord)==0 || sum(matches_cloud)==0
             continue
         else
             fprintf('success in %s',timestamp);
             target_coord_name = ist_coord_list(matches_coord).name;
-            target_cloud_name = cloud_hdf_list(matches_cloud).name;
-           
-            %era5辅助数据 现将温度的doy天数判断是否需要将中间月份剔除，并且将选取的时间点都提取出来
-            target_doy = str2double(target_ist_name(12:14));
-            target_hour = str2double(target_ist_name(16:17));
-            if target_doy>89
-                target_doy = target_doy - (30+31+30+31+31);
-            end
-            target_air_t2m = era_t2m(:,:,target_doy);
-            target_spe_u = era_wind_u(:,:,target_doy);
-            target_spe_v = era_wind_v(:,:,target_doy);
+            target_cloud_name = cloud_hdf_list(matches_cloud).name; 
 
-            wind_10m_speed = sqrt(target_spe_u.^2 + target_spe_v.^2);
-            % 转换为2m的风速
-            wind_2m_speed = wind_10m_speed/1.27;
-
-            mod_aux = sortrows(double([reshape(era_lon,[era_r*era_c 1]),reshape(era_lat,[era_r*era_c 1]),... 
-                                    reshape(target_air_t2m,[era_r*era_c 1]), reshape(wind_2m_speed, [era_r*era_c 1])]));
-            
-            
             % 注意，这里的输出参数，都是剔除过 多余列数的数据
             % 注意ist_coarse_lon 和 ist_lon 都是-180-180度的范围
             ist_output = ist_data_exact(target_ist_path,ist_coord_path,cloud_path,target_ist_name,target_coord_name,target_cloud_name);
             [mod_ist,~,~,ist_lat,ist_lon,ist4cloud,myd_x,myd_y,target_cloud_file] = ist_output{:};
             [ist_r,ist_c]= size(mod_ist);
-            
              % 读取无云条件下的海冰表面温度
              % 得出的输出参数，第一项为根据Modis云掩膜得出的无云下的冰表面温度；第二项为根据block，云识别后得出的无云表面温度
              % surf_non_cloud_ist是n*3的数据矩阵
             [~,surf_non_cloud_ist] = ist_no_cloud_exact(mod_ist,ist4cloud,ist_lon,ist_lat,ist_r,ist_c,...
                                                         era_cloud_lon,era_cloud_lat, era_cloud_hcc,era_cloud_mcc,...
-                                                            target_doy,target_hour,myd_x,myd_y);
-                                                        
+                                                            target_doy,target_hour,myd_x,myd_y);                                        
             sort_non_cloud_ist = roundn(sortrows(surf_non_cloud_ist),-4);                                                                                       
             % 先对夜间数据进行处理，得出夜间海冰厚度，作为计算日间海冰厚度的初始值,并再设定范围，进行迭代计算
-           %% 先是夜间计算
-%             nswf = 0;
-%             sit_night  = ist2sit(surf_non_cloud_ist,mod_aux,nswf);
-%             sit_inx = sit_night < 0 | sit_night > 1;
-%             sit_night(sit_inx,:)=[];
-
             expanded_solar_zenith = solar_zenith_exact(target_cloud_file,mod_ist);
-            
            %% 白天计算 得出应用的太阳天顶角的数据矩阵2030*1350
             inx_zenith = ist_lon < -120 & ist_lon > -170 & ist_lat>66 & ist_lat<80;
             sort_solar_zenith = roundn(sortrows([ist_lon(inx_zenith),ist_lat(inx_zenith),expanded_solar_zenith(inx_zenith)]),-4);
@@ -100,7 +87,7 @@ function sit2thermodynamic_equilibrium(result_doy,ist_parent_path,ist_coord_pare
             sit_awi = awi_exact_sit(str_ib_date);
             % 将sit_awi海冰厚度对应到每一个有效冰面温度，由于只是初始值，所以利用最邻近法进行赋值
             wgs84 = referenceEllipsoid('WGS84');
-            for j = size(target_non_cloud_ist,1)
+            for j = 1:size(target_non_cloud_ist,1)
                 j_coord = target_non_cloud_ist(j,1:2);
                 j_angdist = distance(j_coord(2),j_coord(1),sit_awi(:,2),sit_awi(:,1),wgs84);
                 j_dist = deg2km(j_angdist);
@@ -118,7 +105,7 @@ function sit2thermodynamic_equilibrium(result_doy,ist_parent_path,ist_coord_pare
                 sit4nswf_range = [0.05:0.025:0.5,0.55:0.05:sit_max];
                 sit_candidate4nswf_parameterization = sit4nswf_range;
                 for k = 1:length(sit4nswf_range)
-                    nswf_parameterization = net_shortwave_flux_parameterization(target_solar_zenith(k),sit4nswf_range(k));
+                    nswf_parameterization = net_shortwave_flux_parameterization(target_solar_zenith(j,3),sit4nswf_range(k));
                     sit_candidate4nswf_parameterization(k) = ist2sit(target_non_cloud_ist(j,:),mod_aux,nswf_parameterization);
                 end
                 nan_param_inx = isnan(sit_candidate4nswf_parameterization);
@@ -132,12 +119,11 @@ function sit2thermodynamic_equilibrium(result_doy,ist_parent_path,ist_coord_pare
                     target_non_cloud_sit(j,4) = sit_candidate4nswf_parameterization(select_inx);
                 end
             end
+            output_path = 'W:\ljx_aux\MODIS\output_sit';
+            output_name = [timestamp,'.mat'];
+            save(fullfile(output_path,output_name),'target_non_cloud_sit');
         end
-        output_path = 'W:\ljx_aux\MODIS\output_sit';
-        output_name = [timestamp,'.mat'];
-        save(fullfile(output_path,output_name),'target_non_cloud_sit')
     end
-
 end
 
 function era_output = era_data_exact(era_path,target_year,era_mat_path)
@@ -340,8 +326,9 @@ function mod2sit = ist2sit(surf_aux,mod_aux,nswf)
     surf_coords = [x_surf, y_surf, z_surf];
     [idx, ~] = knnsearch(tree, surf_coords, 'K', 1); % 批量查询最近邻
     surf_aux(4:5) = mod_aux(idx, 3:4); % 提取温度和风速
-    inx = surf_aux(4)>273.15-5;
-    surf_aux(inx,:)=[];
+    if surf_aux(4)>268.15
+        mod2sit = nan;return;
+    end
 
     lwd_u = 0.99*a*surf_aux(3).^4;   % 长波 上行 
 %         e = 0.7855*(1+0.2232*0.4^0.75);
@@ -370,9 +357,13 @@ end
 
 function sit_awi = awi_exact_sit(str_ib_date)
     awi_parent_path = 'W:\ljx_aux\SMOS_SIT_prod\AWI-SMOS\SMOS';
-    target_year = str_ib_date(1:4);
-    target_mon = str_ib_date(5:6);
-    target_awi_date = num2str(str2double(str_ib_date)-1);
+    
+    dt  = datetime(str_ib_date,'InputFormat','yyyyMMdd');
+    dtm = dt - days(1);  % 前一天
+    target_year = datestr(dtm,'yyyy');
+    target_mon  = datestr(dtm,'mm');
+    target_awi_date = datestr(dtm,'yyyymmdd');
+    
     target_awi_name = ['SMOS_Icethickness_v3.3_north_',target_awi_date,'.nc'];
     target_awi_file = fullfile(awi_parent_path,target_year,target_mon,target_awi_name);
     awi_lat = ncread(target_awi_file,'latitude');

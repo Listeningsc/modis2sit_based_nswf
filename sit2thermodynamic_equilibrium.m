@@ -2,8 +2,7 @@ function sit2thermodynamic_equilibrium(result_doy,ist_parent_path,ist_coord_pare
     era_output = era_data_exact(era_path,target_year,era_mat_path);
     [era_cloud_lat, era_cloud_lon, era_cloud_hcc, era_cloud_mcc, ...
      era_lon, era_lat, era_wind_u, era_wind_v, era_t2m] = era_output{:};
-    [era_r,era_c] = size(era_lon);
-    
+ 
     %% modis 数据路径
     % 表面温度路径
     % day_path 表示是白天还是晚上
@@ -31,28 +30,80 @@ function sit2thermodynamic_equilibrium(result_doy,ist_parent_path,ist_coord_pare
     target_month = str2double(str_ib_date(5:6));
     for i = 1:numel(filtered_name)
         target_ist_name = filtered_name{i};
-        timestamp = target_ist_name(8:19);
-        
-        %era5辅助数据 现将温度的doy天数判断是否需要将中间月份剔除，并且将选取的时间点都提取出来
-        target_doy = str2double(target_ist_name(12:14));
-        target_hour = str2double(target_ist_name(16:17));
-        if target_doy>89
-            target_doy = target_doy - (30+31+30+31+31);
+              
+        % === 从文件名取时间戳 安全解析 'yyyyDDD.HHmm'，如 '2014071.0030' ===
+        timestamp  = target_ist_name(8:19);              % e.g. '2014071.0030'
+        yr  = str2double(timestamp(1:4));                % 2014
+        doy = str2double(timestamp(5:7));                % 071
+        hh  = str2double(timestamp(9:10));               % 00
+        mi  = str2double(timestamp(11:12));              % 30
+        % 构造绝对时间（自动处理闰年）
+        dt = datetime(yr,1,1) + days(doy-1) + hours(hh) + minutes(mi);
+        % 公历信息
+        mm        = month(dt);
+        dd_in_mon = day(dt, 'dayofmonth');
+        target_hour = hour(dt);   % 0..23
+
+        % === 仅保留 1–3 & 9–12 月：把 4–8 月“挤掉”后重新编号 ERA 日索引 ===
+        kept_months = [1 2 3 9 10 11 12];
+        if ~ismember(mm, kept_months)
+            warning('ERA中无 %s 的数据（4–8月缺失），跳过该影像。', datestr(dt,'yyyy-mm-dd HH:MM'));
+            continue
         end
-        target_air_t2m = era_t2m(:,:,target_doy);
-        target_spe_u = era_wind_u(:,:,target_doy);
-        target_spe_v = era_wind_v(:,:,target_doy);
+
+        days_in_month = arrayfun(@(m)eomday(yr,m), 1:12);  % 闰年自动处理
+        kept_days     = days_in_month(kept_months);
+        offsets       = [0, cumsum(kept_days(1:end-1))];   % 每个“保留月”在压缩年中的起始天偏移
+        k             = find(kept_months==mm, 1, 'first');
+        era_day_idx   = offsets(k) + dd_in_mon;            % ← 压缩后的 ERA “日层”索引(1-based)
+
+        % 与你下游变量保持一致
+        target_doy    = era_day_idx;                       % 注意：这里是“压缩后”的日索引
+        % 取该“压缩日”上的 ERA 逐日场
+        target_air_t2m = era_t2m(:,:,era_day_idx);
+        target_spe_u   = era_wind_u(:,:,era_day_idx);
+        target_spe_v   = era_wind_v(:,:,era_day_idx);
+
+
         wind_10m_speed = sqrt(target_spe_u.^2 + target_spe_v.^2);
-        % 转换为2m的风速
-        wind_2m_speed = wind_10m_speed/1.27;
-        mod_aux = sortrows(double([reshape(era_lon,[era_r*era_c 1]),reshape(era_lat,[era_r*era_c 1]),... 
-                                reshape(target_air_t2m,[era_r*era_c 1]), reshape(wind_2m_speed, [era_r*era_c 1])]));     
+        wind_2m_speed  = wind_10m_speed/1.27;
+        % ===== ERA 2m 气温/风速插值器（适配 1440x84：lon在第1维，lat在第2维） =====
+        Ta2D = target_air_t2m;      % 期望 size: [1440 x 84]  (维1=lon, 维2=lat)
+        U22D = wind_2m_speed;       % 同上
+       % （若加载为 [84 x 1440]，可加一行安全转置）
+        if size(Ta2D,1)==84 && size(Ta2D,2)==1440
+            Ta2D = Ta2D.';  U22D = U22D.';
+        end
+        
+        % 正确抽轴：lon 取第1列（随行变化），lat 取第1行（随列变化）
+        lon_vec = double(era_lon(:,1));   % 1440x1
+        lat_vec = double(era_lat(1,:));   % 1x84
+        
+       % --- 经度处理：映射到 [-180,180)，并按同维度重排数据（第1维） ---
+        lon_vec(lon_vec >= 180) = lon_vec(lon_vec >= 180) - 360;
+        [lon_vec, lon_ord] = sort(lon_vec, 'ascend');
+        Ta2D = Ta2D(lon_ord, :);
+        U22D = U22D(lon_ord, :);
+        % --- 纬度处理：若为降序则翻转，并按同维度重排数据（第2维） ---
+        if numel(lat_vec) > 1 && lat_vec(2) < lat_vec(1)
+            lat_vec = fliplr(lat_vec);
+            Ta2D = Ta2D(:, end:-1:1);
+            U22D = U22D(:, end:-1:1);
+        end
+           % --- 保险：去重（极少见，但可避免0/360重复之类情况） ---
+        [lon_vec, ia_lon] = unique(lon_vec, 'stable');  Ta2D = Ta2D(ia_lon, :);  U22D = U22D(ia_lon, :);
+        [lat_vec, ia_lat] = unique(lat_vec, 'stable');  Ta2D = Ta2D(:, ia_lat);  U22D = U22D(:, ia_lat);
+
+        % 生成 griddedInterpolant（V 的尺寸必须是 [numel(lon_vec) x numel(lat_vec)]）
+        F_Ta = griddedInterpolant({lon_vec, lat_vec}, Ta2D, 'linear', 'nearest');
+        F_U2 = griddedInterpolant({lon_vec, lat_vec}, U22D, 'linear', 'nearest');
+        
         matches_coord = contains({ist_coord_list.name}, timestamp);
         matches_cloud = contains({cloud_hdf_list.name}, timestamp);
         if sum(matches_coord)==0 || sum(matches_cloud)==0
             continue
         else
-            fprintf('success in %s',timestamp);
+            fprintf('success in %s\n',timestamp);
             target_coord_name = ist_coord_list(matches_coord).name;
             target_cloud_name = cloud_hdf_list(matches_cloud).name; 
 
@@ -66,60 +117,93 @@ function sit2thermodynamic_equilibrium(result_doy,ist_parent_path,ist_coord_pare
              % surf_non_cloud_ist是n*3的数据矩阵
             [~,surf_non_cloud_ist] = ist_no_cloud_exact(mod_ist,ist4cloud,ist_lon,ist_lat,ist_r,ist_c,...
                                                         era_cloud_lon,era_cloud_lat, era_cloud_hcc,era_cloud_mcc,...
-                                                            target_doy,target_hour,myd_x,myd_y);                                        
-            sort_non_cloud_ist = roundn(sortrows(surf_non_cloud_ist),-4);                                                                                       
+                                                            target_doy,target_hour,myd_x,myd_y);           
+                                                        
+           %% FIX: 空集保护
+            if isempty(surf_non_cloud_ist)
+                warning('No clear-sky IST for %s, skip.', timestamp);
+                continue
+            end
+            
             % 先对夜间数据进行处理，得出夜间海冰厚度，作为计算日间海冰厚度的初始值,并再设定范围，进行迭代计算
             expanded_solar_zenith = solar_zenith_exact(target_cloud_file,mod_ist);
            %% 白天计算 得出应用的太阳天顶角的数据矩阵2030*1350
             inx_zenith = ist_lon < -120 & ist_lon > -170 & ist_lat>66 & ist_lat<80;
-            sort_solar_zenith = roundn(sortrows([ist_lon(inx_zenith),ist_lat(inx_zenith),expanded_solar_zenith(inx_zenith)]),-4);
-            ist2zenith_inx = ismember(sort_solar_zenith(:,1:2),sort_non_cloud_ist(:,1:2),'rows');
-            % 得出有效冰面温度下的太阳天顶角
-            target_solar_zenith = sort_solar_zenith(ist2zenith_inx,:);
-            % 得出和有效太阳天顶角下的冰面温度
-            zenith2ist_inx = ismember(sort_non_cloud_ist(:,1:2),target_solar_zenith(:,1:2),'rows');
-            target_non_cloud_ist = sort_non_cloud_ist(zenith2ist_inx,:);
-            % target_solar_zenith；target_non_cloud_ist 二者经纬度和序列都一致
-            % 输出文件为target_non_cloud_sit,第三列拟合短波辐射海冰厚度；第四列为参数化短波辐射海冰厚度
-            target_non_cloud_sit = target_non_cloud_ist;
-            % 提取白天的前一天的 awi 海冰厚度,作为初始海冰厚度值,
-            % 输出AWI海冰厚度n*3数据矩阵
-            sit_awi = awi_exact_sit(str_ib_date);
-            % 将sit_awi海冰厚度对应到每一个有效冰面温度，由于只是初始值，所以利用最邻近法进行赋值
-            wgs84 = referenceEllipsoid('WGS84');
-            for j = 1:size(target_non_cloud_ist,1)
-                j_coord = target_non_cloud_ist(j,1:2);
-                j_angdist = distance(j_coord(2),j_coord(1),sit_awi(:,2),sit_awi(:,1),wgs84);
-                j_dist = deg2km(j_angdist);
-                j_inx = j_dist == min(j_dist);
-                reference_sit = sit_awi(j_inx,3);  
-                nswf_fit = net_shortwave_flux_fit(reference_sit,target_month);
-                nswf_fit_sit = ist2sit(target_non_cloud_ist(j,:),mod_aux,nswf_fit);
+                        % 量化并排序
+            nc = sortrows([round(surf_non_cloud_ist(:,1),4), ...
+                           round(surf_non_cloud_ist(:,2),4), ...
+                           surf_non_cloud_ist(:,3)], [1 2]);           % N×3
 
-                if isnan(nswf_fit_sit)
-                    nswf_fit_sit = -1;
-                end
-                target_non_cloud_sit(j,3) = nswf_fit_sit;
-                 
-                sit_max = max(0.9,1.5*reference_sit);
-                sit4nswf_range = [0.05:0.025:0.5,0.55:0.05:sit_max];
-                sit_candidate4nswf_parameterization = sit4nswf_range;
-                for k = 1:length(sit4nswf_range)
-                    nswf_parameterization = net_shortwave_flux_parameterization(target_solar_zenith(j,3),sit4nswf_range(k));
-                    sit_candidate4nswf_parameterization(k) = ist2sit(target_non_cloud_ist(j,:),mod_aux,nswf_parameterization);
-                end
-                nan_param_inx = isnan(sit_candidate4nswf_parameterization);
-                sit_candidate4nswf_parameterization(nan_param_inx) = [];
-                if isempty(sit_candidate4nswf_parameterization)
-                    continue
-                else
-                    sit4nswf_range(nan_param_inx)=[];
-                    sit_diff = abs(sit4nswf_range-sit_candidate4nswf_parameterization);
-                    select_inx = sit_diff == min(sit_diff);
-                    target_non_cloud_sit(j,4) = sit_candidate4nswf_parameterization(select_inx);
-                end
+            sz = sortrows([round(ist_lon(inx_zenith),4), ...
+                           round(ist_lat(inx_zenith),4), ...
+                           expanded_solar_zenith(inx_zenith)], [1 2]); % M×3
+            % 用 ismember 的定位索引保证一一对应与相同顺序
+            [tf, loc] = ismember(nc(:,1:2), sz(:,1:2), 'rows');
+            target_non_cloud_ist = nc(tf,:);         % N'×3
+            target_solar_zenith  = sz(loc(tf),:);    % N'×3（与上同序）
+
+            %% FIX: 再次空集保护
+            if isempty(target_non_cloud_ist)
+                warning('No matched SZA-IST pixels for %s, skip.', timestamp);
+                continue
+            end     
+            % ---- AWI 前一天 SIT 作为初值 ----
+            sit_awi = awi_exact_sit(str_ib_date);
+
+            %% FIX: 启动并行池（只开一次，不在每景结束时关闭）
+            if isempty(gcp('nocreate'))
+                parpool(4);   % 让 MATLAB 自选并行度；你也可填固定数，如 parpool(4)
             end
-            output_path = 'W:\ljx_aux\MODIS\output_sit';
+            npts = size(target_non_cloud_ist,1);
+            sit_fit   = nan(npts,1);   % 第3列
+            sit_param = nan(npts,1);   % 第4列
+
+            % 广播常量（避免每个 worker 拷贝/构造）
+            const_F_Ta = parallel.pool.Constant(F_Ta);
+            const_F_U2 = parallel.pool.Constant(F_U2);
+            const_AWI  = parallel.pool.Constant(sit_awi);               
+            constEll   = parallel.pool.Constant(wgs84Ellipsoid('km')); 
+            % ---- 并行每个像元 ----
+            parfor j = 1:npts
+                lon_j = target_non_cloud_ist(j,1);
+                lat_j = target_non_cloud_ist(j,2);
+                Ts_j  = target_non_cloud_ist(j,3);   % K
+                sza_j = target_solar_zenith(j,3);    % deg
+
+                % 最近 AWI 初值
+                awi  = const_AWI.Value;    % [lon, lat, sit]
+                ang  = distance(lat_j, lon_j, awi(:,2), awi(:,1), constEll.Value);
+                [~, j_inx]     = min(deg2km(ang));
+                reference_sit  = awi(j_inx,3);
+
+                % 基线：使用你的拟合（若改用参数化，请替换下一行）
+%                 nswf_fit = net_shortwave_flux_fit(reference_sit, target_month);
+%                 tmp3     = ist2sit([lon_j, lat_j, Ts_j], const_F_Ta.Value, const_F_U2.Value, nswf_fit);
+%                 if isnan(tmp3), tmp3 = -1; end
+
+                % 扫描参数化
+                sit_max   = max(0.9, 1.5*reference_sit);
+                sit_range = [0.05:0.025:0.5, 0.55:0.05:sit_max].';
+                cand_parameterization      = nan(numel(sit_range),1);
+                cand_fit      = nan(numel(sit_range),1);
+                for k = 1:numel(sit_range)
+                    nswf_k = net_shortwave_flux_parameterization(sza_j, sit_range(k));
+                    cand_parameterization(k) = ist2sit([lon_j, lat_j, Ts_j], const_F_Ta.Value, const_F_U2.Value, nswf_k);
+                    nswf_fit = net_shortwave_flux_fit(sit_range(k), target_month);
+                    cand_fit(k)      = ist2sit([lon_j, lat_j, Ts_j], const_F_Ta.Value, const_F_U2.Value, nswf_fit);
+                end
+                
+                tmp3 = sit2cand(sit_range,cand_fit);
+                tmp4 = sit2cand(sit_range,cand_parameterization);
+  
+                sit_fit(j)   = tmp3;   % 切片写入
+                sit_param(j) = tmp4;
+            end
+
+            target_non_cloud_sit = [target_non_cloud_ist, sit_fit, sit_param];
+            % ---- 输出-----
+            output_path = '/scratch/lijiaxing/output/matlab_output/Mod2sit';
+             if ~exist(output_path,'dir'); mkdir(output_path); end
             output_name = [timestamp,'.mat'];
             save(fullfile(output_path,output_name),'target_non_cloud_sit');
         end
@@ -189,20 +273,13 @@ function expanded_solar_zenith = solar_zenith_exact(target_cloud_file,mod_ist)
     % 但是天顶角的数据都是406*270的size，而输入参数中都是经过剔除多余列数的数据
     % 注意 天顶角的定义是自己天顶方向和太阳的夹角，因此，若天顶角大于90度，就说明是晚上。
     ist4solar_zenith = double(hdfread(target_cloud_file,'mod35/Data Fields/Solar_Zenith'))*0.01;
-    [output_size_x, output_size_y] = size(mod_ist);
-    expanded_solar_zenith = NaN(output_size_x, output_size_y);
-    for i = 1:406
-        for j = 1:270
-            % 计算该天顶角值在输出矩阵中的对应位置
-            row_start = (i - 1) * 5 + 1;  % 行的起始索引
-            row_end = i * 5;  % 行的结束索引
-            col_start = (j - 1) * 5 + 1;  % 列的起始索引
-            col_end = j * 5;  % 列的结束索引
+    [out_x, out_y] = size(mod_ist);
+    [rz, cz] = size(ist4solar_zenith);
+    bx = floor(out_x / rz);
+    by = floor(out_y / cz);
 
-            % 将天顶角数据赋值到对应的5x5KM区域 
-            expanded_solar_zenith(row_start:row_end, col_start:col_end) = ist4solar_zenith(i, j);
-        end
-    end
+    expanded_solar_zenith = kron(ist4solar_zenith, ones(bx, by));
+    expanded_solar_zenith = expanded_solar_zenith(1:out_x, 1:out_y);
 end
 
 function [surf_clear_ist,surf_non_cloud_ist] = ist_no_cloud_exact(mod_ist,ist4cloud,ist_lon,ist_lat,ist_r,ist_c,era_cloud_lon,era_cloud_lat, era_cloud_hcc,era_cloud_mcc,target_doy,target_hour,myd_x,myd_y) 
@@ -239,30 +316,31 @@ function [surf_clear_ist,surf_non_cloud_ist] = ist_no_cloud_exact(mod_ist,ist4cl
     mask_cloud_inx = ismember(cloud1_8bit(:,8),'1') & ismember(cloud1_8bit(:,6:7),'00','rows');
     mask_cloud_2d = double(reshape(mask_cloud_inx,ist_r,ist_c));
     mask_cloud_nan = mask_cloud_2d;
-    num_rows = floor(ist_r / block_size);  % 划分的行数
-    num_cols = floor(ist_c / block_size);  % 划分的列数
+    
+    nr = floor(ist_r/block_size)*block_size;
+    nc = floor(ist_c/block_size)*block_size;
+
+    M = mask_cloud_nan(1:nr, 1:nc);    % 裁成可整除大小
+    % 计算每个 10x10 块的像元计数（和原逻辑一致）
+    S = reshape(M, block_size, nr/block_size, block_size, nc/block_size);
+    S = squeeze(sum(sum(S,1),3));      % (nr/block) x (nc/block)
+    bad = (S > 10);                     % 原标准：>10 判为云
+
+    % 把坏块“膨胀回”像元分辨率
+    bad_rep = kron(bad, true(block_size));
+    bad_rep = logical(bad_rep);
+    bad_rep = bad_rep(1:nr, 1:nc);               % 保险：裁到与 tmp 同尺寸
+    % 写回到 mask_cloud_nan
+    tmp = mask_cloud_nan(1:nr,1:nc);
+    tmp(bad_rep) = NaN;
+    mask_cloud_nan(1:nr,1:nc) = tmp;
+
+    % 余下边界（整除外的最后几列/行）按你的原逻辑保持为 NaN
+    if nc < ist_c, mask_cloud_nan(:,nc+1:end) = NaN; end
+    if nr < ist_r, mask_cloud_nan(nr+1:end,:) = NaN; end
 
     d2h = (target_doy-1)*24 + target_hour;
 
-    grid_count = zeros(num_rows, num_cols); % 用于记录每个格网块内的云层覆盖像元数
-    for i = 1:num_rows
-        for j = 1:num_cols
-            % 当前格网块的范围
-            row_min = (i-1) * block_size + 1;
-            row_max = i * block_size;
-            col_min = (j-1) * block_size + 1;
-            col_max = j * block_size;
-
-            % 查找当前格网块内的云层覆盖像元
-            in_grid = mask_cloud_nan(row_min:row_max, col_min:col_max);
-            cloud_block_coverage = sum(in_grid(:));
-            grid_count(i, j) = cloud_block_coverage;
-            % cloud_block_coverage >10 就说明是云的
-            if cloud_block_coverage > 10
-                mask_cloud_nan(row_min:row_max, col_min:col_max) = nan;
-            end
-        end
-    end   
     % 再判断陆地的情况下，也设置为nan  该表达式为不是海水
     mask_land_inx = ~ismember(cloud1_8bit(:,1:2),'00','rows');
     mask_land_2d = reshape(mask_land_inx,ist_r,ist_c);
@@ -270,23 +348,33 @@ function [surf_clear_ist,surf_non_cloud_ist] = ist_no_cloud_exact(mod_ist,ist4cl
     mask_cloud_nan(mask_land_2d) = nan;
     % 再判断小于10的情况下的高云和中云的覆盖情况
     % 网格化ERA5
-    [era_lon_grid, era_lat_grid] = meshgrid(era_cloud_lon, era_cloud_lat); 
-    % 调整云数据维度（1440×101×time → 101×1440×time）
-    target_cloud_hcc = permute(era_cloud_hcc(:,:,d2h), [2,1]);
-    target_cloud_mcc = permute(era_cloud_mcc(:,:,d2h), [2,1]);
+    target_cloud_hcc = era_cloud_hcc(:,:,d2h);   % [nLon x nLat]
+    target_cloud_mcc = era_cloud_mcc(:,:,d2h);
 
-    proj = projcrs(3413);  % WGS84北极极射投影
-    [era_x, era_y] = projfwd(proj, era_lat_grid, era_lon_grid);  % 输入101×1440网格
+    lon_vec = era_cloud_lon(:)';   % 1 x nLon
+    lat_vec = era_cloud_lat(:)';   % 1 x nLat
 
-    % 插值到MODIS像元
-    F_hcc = scatteredInterpolant(era_x(:), era_y(:), target_cloud_hcc(:), 'linear', 'none');
-    hcc_interp = F_hcc(myd_x, myd_y);  % myd_x和myd_y已提前投影
-    M_hcc = scatteredInterpolant(era_x(:), era_y(:), target_cloud_mcc(:), 'linear', 'none');
-    mcc_interp = M_hcc(myd_x, myd_y);  % myd_x和myd_y已提前投影
+    if any(lon_vec > 180)
+        lon_vec = lon_vec - 360;
+        [lon_vec, ix] = sort(lon_vec);
+        target_cloud_hcc = target_cloud_hcc(ix, :);
+        target_cloud_mcc = target_cloud_mcc(ix, :);
+    end
+    if numel(lat_vec) > 1 && lat_vec(2) < lat_vec(1)
+        lat_vec = fliplr(lat_vec);
+        target_cloud_hcc = target_cloud_hcc(:, end:-1:1);
+        target_cloud_mcc = target_cloud_mcc(:, end:-1:1);
+    end
+
+    F_hcc = griddedInterpolant({lon_vec, lat_vec}, target_cloud_hcc, 'linear','none');
+    F_mcc = griddedInterpolant({lon_vec, lat_vec}, target_cloud_mcc, 'linear','none');
+
+    hcc_interp = F_hcc(ist_lon, ist_lat);
+    mcc_interp = F_mcc(ist_lon, ist_lat);
+
     inx_cc = hcc_interp > 0.33 | mcc_interp > 0.51;
     mask_cloud_nan(inx_cc) = nan;
-    % 将后几列没有处理的数据赋值nan
-    mask_cloud_nan(:,num_cols*10+1:end) = nan;
+
     % --- 剔除小晴空区块 ---
     min_clear_size = 3;
     min_pixels = min_clear_size^2;
@@ -302,61 +390,33 @@ function [surf_clear_ist,surf_non_cloud_ist] = ist_no_cloud_exact(mod_ist,ist4cl
 %     end   
 end
 
-function mod2sit = ist2sit(surf_aux,mod_aux,nswf)
+function mod2sit = ist2sit(surf_aux,F_Ta,F_U2,nswf)
     % 注意这里的surf_aux只有一组数据
     a = 5.67e-8;        % 玻尔兹曼常数
     p = 1.3;                % 空气密度
     C = 1.44e-3;            % 感热与潜热中性体传导系数
     Li = 2.86e6;
+    epsF = 5;     % 阈值
     
-    % 将剔除后的表面温度转化为海冰厚度
-    R = 6371; % 地球半径（km）
-    % 转换为三维坐标
-    x = R .* cosd(mod_aux(:,2)) .* cosd(mod_aux(:,1));
-    y = R .* cosd(mod_aux(:,2)) .* sind(mod_aux(:,1));
-    z = R .* sind(mod_aux(:,2));
-    era_coords = [x, y, z];
-    tree = KDTreeSearcher(era_coords); % 构建KDTree
-
-    surf_lon = surf_aux(1);
-    surf_lat = surf_aux(2);
-    x_surf = R .* cosd(surf_lat) .* cosd(surf_lon);
-    y_surf = R .* cosd(surf_lat) .* sind(surf_lon);
-    z_surf = R .* sind(surf_lat);
-    surf_coords = [x_surf, y_surf, z_surf];
-    [idx, ~] = knnsearch(tree, surf_coords, 'K', 1); % 批量查询最近邻
-    surf_aux(4:5) = mod_aux(idx, 3:4); % 提取温度和风速
-    if surf_aux(4)>268.15
-        mod2sit = nan;return;
-    end
-
-    lwd_u = 0.99*a*surf_aux(3).^4;   % 长波 上行 
-%         e = 0.7855*(1+0.2232*0.4^0.75);
-    lwd_d = 0.7855*a*surf_aux(4).^4; % 长波下行     
-    % 感热通量
-    Fs = p*1004*C*surf_aux(5)*(surf_aux(4) - surf_aux(3));
-    % 潜热通量 Fe
-%         Fe_MXY = 0.622*p*Li*C*sort_surf_T(:,5).*SVP_MXY(1000,sort_surf_T(:,6)-273.15,sort_surf_T(:,3)-273.15)./1000; 
-    % 另一种 潜热通量计算方式
-%         Fe = 0.622*p*2.49e3*C*S_Loca(:,5).*(0.9*SVP(S_Loca(:,4))-SVP(S_Loca(:,3)))./1000;
-    % 第三种计算潜热通量计算方式
-    Fe = 0.622*p*Li*C*surf_aux(5)*(0.8*SVP_kaleschke(surf_aux(4)-273.15)-SVP_kaleschke(surf_aux(3)-273.15))/1000;
-
-    % lwd_d - lwd_u + Fe + Fs + Fc = 0;
+    lon = surf_aux(1); lat = surf_aux(2); Ts = surf_aux(3);
+    Ta  = F_Ta(lon,lat);         % K
+    U2  = F_U2(lon,lat);         % m/s
+    if isnan(Ta) || isnan(U2), mod2sit = NaN; return; end    
+    
+    lwd_u = 0.99*a*Ts.^4;
+    lwd_d = 0.7855*a*Ta.^4;
+    Fs = p*1004*C*U2*(Ta - Ts);
+    Fe = 0.622*p*Li*C*U2*(0.8*SVP_kaleschke(Ta-273.15) - SVP_kaleschke(Ts-273.15))/1000;
     Fc = nswf + lwd_d - lwd_u + Fs + Fe;
-    Ki = 2.034+0.13*8/((surf_aux(3)+271.35)/2-273);
-    mod2sit = Ki * (271.35 - surf_aux(3))/Fc;
-%     surf_aux(:,6) = mod2sit;
-    if mod2sit <0 | mod2sit>1
-        mod2sit = nan;
-    end
-%     mod2sit_inx = mod2sit<0 | mod2sit>1;
-%     surf_aux(sit_inx,:)=[];
-%     surf_aux(3:5)=[];
+    if abs(Fc) < epsF, mod2sit = NaN; return; end
+
+    Ki = 2.034 + 0.13*8/((Ts+271.35)/2-273);
+    mod2sit = Ki * (271.35 - Ts) / Fc;
+    if mod2sit < 0 || mod2sit > 1, mod2sit = NaN; end
 end
 
 function sit_awi = awi_exact_sit(str_ib_date)
-    awi_parent_path = 'W:\ljx_aux\SMOS_SIT_prod\AWI-SMOS\SMOS';
+    awi_parent_path = '/project/lijiaxing/data_source/SMOS_SIT/AWI';
     
     dt  = datetime(str_ib_date,'InputFormat','yyyyMMdd');
     dtm = dt - days(1);  % 前一天
